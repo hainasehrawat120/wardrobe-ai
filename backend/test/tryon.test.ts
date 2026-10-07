@@ -1,7 +1,7 @@
 import sharp from "sharp"
 import { expect, it, vi } from "vitest"
 import { aspectRatio, createImageAI, fitReference, QUOTA_MESSAGE, QuotaError } from "../src/ai/images.js"
-import type { ItemRow, LookRow } from "../src/queries.js"
+import { pictureError, type ItemRow, type LookRow } from "../src/queries.js"
 import { createStylist, type Ask } from "../src/ai/stylist.js"
 import { drawTryOn, garmentLabels, tryOnPrompt } from "../src/tryon.js"
 import { studioEditPrompt, studioPrompt } from "../src/studio.js"
@@ -281,7 +281,7 @@ it("redraws with the standard model, and other failures keep their reason", asyn
     }) as typeof fetch,
   })
   const shirt = { bytes: new Uint8Array([1]), contentType: "image/jpeg" }
-  await expect(cf.generate({ prompt: "again", garments: [shirt], redraw: true })).rejects.toThrow(/No image provider could draw this picture \(HTTP 400 bad input\)/)
+  await expect(cf.generate({ prompt: "again", garments: [shirt], redraw: true })).rejects.toThrow(/No image provider could draw this picture \(cloudflare: HTTP 400 bad input\)/)
   expect(urls).toEqual(["klein-4b"])
 })
 
@@ -403,4 +403,57 @@ it("redraws a picture with a shop tag or a pasted-on pocket", async () => {
   const image = await drawTryOn(images, stylist, { prompt: "A woman.", labels: ["top: Kurta"], width: 1024, height: 1536 })
   expect(image?.bytes).toEqual(new Uint8Array([2]))
   expect(asked[1]).toContain("no price tags, labels or hangers")
+})
+
+it("says why there's no picture: quota only when every service is out of it, otherwise each reason", async () => {
+  const ai = createImageAI({
+    replicateImageModel: "",
+    replicateBgModel: "",
+    freeImages: "none",
+    pollinationsUrl: "",
+    deapi: { token: "de-tok", model: "Flux_2_Klein_4B_BF16", use: "tryons", pollMs: 1 },
+    cloudflare: { accountId: "acc", token: "tok", model: "m1", editModel: "klein-4b" },
+    fetch: (async (url: string) =>
+      url.includes("deapi")
+        ? Response.json({ message: "Too Many Attempts." }, { status: 429 })
+        : Response.json({ errors: [{ code: 4006, message: "you have used up your daily free allocation of 10,000 neurons" }] }, { status: 429 })) as typeof fetch,
+  })
+  const shirt = { bytes: new Uint8Array([1]), contentType: "image/jpeg" }
+  const err = await ai.generate({ prompt: "try-on", garments: [shirt] }).catch((e: Error) => e)
+  expect(err).not.toBeInstanceOf(QuotaError)
+  expect((err as Error).message).toBe("No image provider could draw this picture (deapi: HTTP 429 Too Many Attempts.; cloudflare: daily free quota used up)")
+  expect(pictureError((err as Error).message)).toBe("The picture couldn't be made. deapi: HTTP 429 Too Many Attempts.; cloudflare: daily free quota used up")
+  // a studio photo only goes to Cloudflare, so that one is just the quota
+  await expect(ai.generate({ prompt: "studio", garments: [shirt], mode: "studio" })).rejects.toBeInstanceOf(QuotaError)
+  expect(pictureError(QUOTA_MESSAGE)).toBe(QUOTA_MESSAGE)
+})
+
+it("doesn't mistake other Cloudflare errors that mention neurons for the daily quota", async () => {
+  let calls = 0
+  const cf = createImageAI({
+    replicateImageModel: "",
+    replicateBgModel: "",
+    freeImages: "none",
+    pollinationsUrl: "",
+    cloudflare: { accountId: "acc", token: "tok", model: "m1", editModel: "klein-4b" },
+    fetch: (async () => (++calls, Response.json({ errors: [{ code: 3040, message: "Capacity temporarily exceeded (neurons)" }] }, { status: 429 }))) as typeof fetch,
+  })
+  const shirt = { bytes: new Uint8Array([1]), contentType: "image/jpeg" }
+  await expect(cf.generate({ prompt: "x", garments: [shirt] })).rejects.not.toBeInstanceOf(QuotaError)
+  await cf.generate({ prompt: "x", garments: [shirt] }).catch(() => undefined)
+  expect(calls).toBe(2)
+})
+
+it("says deAPI is paused instead of skipping it without a word", async () => {
+  const ai = createImageAI({
+    replicateImageModel: "",
+    replicateBgModel: "",
+    freeImages: "none",
+    pollinationsUrl: "",
+    deapi: { token: "de-tok", model: "Flux_2_Klein_4B_BF16", use: "tryons", pollMs: 1 },
+    fetch: (async () => Response.json({ message: "Insufficient balance" }, { status: 402 })) as typeof fetch,
+  })
+  const shirt = { bytes: new Uint8Array([1]), contentType: "image/jpeg" }
+  await expect(ai.generate({ prompt: "x", garments: [shirt] })).rejects.toThrow("deapi: HTTP 402 Insufficient balance")
+  await expect(ai.generate({ prompt: "x", garments: [shirt] })).rejects.toThrow("deapi: paused for an hour after: HTTP 402 Insufficient balance")
 })

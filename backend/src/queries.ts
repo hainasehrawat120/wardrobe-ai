@@ -121,9 +121,12 @@ export type LookRow = {
   created_at: Date
 }
 
-function pictureError(error: string | null | undefined) {
+export function pictureError(error: string | null | undefined) {
   if (error?.startsWith(QUOTA_MESSAGE)) return QUOTA_MESSAGE
   if (error === "image generation not configured") return "Pictures aren't set up on this server yet."
+  // each picture service's reason, e.g. "deapi: HTTP 429 …; cloudflare: daily free quota used up"
+  const reasons = error?.match(/^No image provider could draw this picture \((.*)\)$/s)?.[1]
+  if (reasons) return `The picture couldn't be made. ${reasons.length > 280 ? `${reasons.slice(0, 280)}…` : reasons}`
   return "The picture couldn't be made this time. Try again in a little while."
 }
 

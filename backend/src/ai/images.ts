@@ -63,20 +63,22 @@ export function createImageAI(opts: ImageOptions): ImageAI {
     enabled: providers.length > 0,
     usesReferences: !!((opts.geminiKey && opts.geminiImageModel) || opts.cloudflare || opts.deapi),
     async generate(req) {
-      const errors: Error[] = []
+      const errors: { name: string; err: Error }[] = []
       for (const p of providers) {
         if (p.accepts && !p.accepts(req)) continue
         try {
           return await p.generate(req)
         } catch (err) {
           console.warn(`[images] ${p.name} failed: ${(err as Error).message}`)
-          errors.push(err as Error)
+          errors.push({ name: p.name.split(" ")[0], err: err as Error })
         }
       }
       if (!providers.length) return null
-      // keep the reason, so the look (and the app) can say why there is no picture
-      if (errors.some((e) => e instanceof QuotaError)) throw new QuotaError(QUOTA_MESSAGE)
-      throw new Error(`No image provider could draw this picture (${errors.map((e) => e.message).join("; ")})`)
+      // the quota message only when every service tried is out of quota; otherwise each one's reason,
+      // so the look (and the app) can say why there is no picture
+      if (errors.length && errors.every((e) => e.err instanceof QuotaError)) throw new QuotaError(QUOTA_MESSAGE)
+      const why = errors.map((e) => `${e.name}: ${e.err instanceof QuotaError ? "daily free quota used up" : e.err.message}`)
+      throw new Error(`No image provider could draw this picture (${why.join("; ") || "none was available"})`)
     },
     removeBackground: async (imageUrl) => (replicate ? replicate(opts.replicateBgModel, { image: imageUrl }) : null),
   }
@@ -176,8 +178,8 @@ function cloudflare(cf: CloudflareOptions, http: typeof fetch): Provider {
     const image = body?.result?.image
     if (!res.ok || !image) {
       const message = `HTTP ${res.status} ${body?.errors?.map((e) => e.message).join("; ") ?? ""}`
-      // 4006: "you have used up your daily free allocation of 10,000 neurons"
-      if (body?.errors?.some((e) => e.code === 4006 || /daily free allocation|neurons/i.test(e.message ?? ""))) {
+      // 4006: "you have used up your daily free allocation of 10,000 neurons"; nothing else counts
+      if (body?.errors?.some((e) => e.code === 4006 || /daily free allocation/i.test(e.message ?? ""))) {
         quotaUntil = new Date().setUTCHours(24, 0, 0, 0)
         console.warn(`[images] cloudflare: daily free quota used up until ${new Date(quotaUntil).toISOString()} (${message})`)
         throw new QuotaError(QUOTA_MESSAGE)
@@ -225,17 +227,21 @@ type DeapiOptions = {
 function deapi(opts: DeapiOptions, http: typeof fetch): Provider {
   const api = "https://api.deapi.ai/api/v2"
   const auth = { Authorization: `Bearer ${opts.token}`, Accept: "application/json" }
-  // out of credit or refused: skip it for a while instead of slowing every picture down
+  // out of credit or refused: don't call it for a while instead of slowing every picture down
   let pausedUntil = 0
+  let pausedFor = ""
   const pause = (why: string) => {
     pausedUntil = Date.now() + 60 * 60 * 1000
+    pausedFor = why
     console.warn(`[images] deapi paused for an hour: ${why}`)
   }
   const size = (n: number | undefined, fallback: number) => Math.min(1536, Math.max(256, Math.round((n ?? fallback) / 16) * 16))
   return {
     name: `deapi ${opts.model}`,
-    accepts: (req) => Date.now() >= pausedUntil && (opts.use === "all" ? !!(req.garments?.length || req.face) : isTryOn(req)),
+    accepts: (req) => (opts.use === "all" ? !!(req.garments?.length || req.face) : isTryOn(req)),
     async generate(req) {
+      // fails straight away, but with its reason, so a missing picture can be explained
+      if (Date.now() < pausedUntil) throw new Error(`paused for an hour after: ${pausedFor}`)
       // up to 3 reference photos; the face goes last
       const refs = [...(req.garments ?? []).slice(0, req.face ? 2 : 3), ...(req.face ? [req.face] : [])]
       const form = new FormData()

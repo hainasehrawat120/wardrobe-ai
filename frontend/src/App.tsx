@@ -374,7 +374,11 @@ function GeneratedLook({ look, setLook, occasion, retry }: { look: Look; setLook
         <div className="absolute left-4 top-4 z-10 flex gap-1 rounded-full bg-white/85 p-1 text-[11px] font-semibold backdrop-blur sm:left-6 sm:top-6">
           {(["photo","model"] as const).map(v=><button key={v} onClick={()=>setView(v)} aria-pressed={view===v} className={`rounded-full px-3 py-1.5 ${view===v?"bg-[#20251f] text-white":""}`}>{v==="photo" ? (look.hasPicture ? "AI photo" : look.visualizationStatus==="pending" ? "AI photo · making..." : "AI photo · unavailable") : "Outfit board"}</button>)}
         </div>
-        {look.visualizationStatus==="failed" && look.visualizationError && <div role="status" className="absolute left-4 top-16 z-10 max-w-[min(360px,80%)] rounded-2xl bg-white/90 px-3.5 py-2.5 text-[11px] leading-4 text-[#20251f] shadow-sm backdrop-blur sm:left-6 sm:top-[4.5rem]">{look.visualizationError}</div>}
+        {look.visualizationStatus==="failed" && <div role="status" className="absolute left-4 top-16 z-10 flex max-w-[min(420px,85%)] items-start gap-3 rounded-2xl bg-white/90 px-3.5 py-2.5 text-[11px] leading-4 text-[#20251f] shadow-sm backdrop-blur sm:left-6 sm:top-[4.5rem]">
+          <span className="flex-1 break-words">{look.visualizationError || "The picture couldn't be made this time."}</span>
+          {/* the saved failure isn't final: draw it again (quota reset, deAPI back, ...) */}
+          <button onClick={()=>{api.visualize(look.id).then(setLook).catch(()=>undefined);}} className="shrink-0 rounded-full bg-[#20251f] px-3 py-1.5 text-[10px] font-semibold text-white">Try again</button>
+        </div>}
         {!me?.bodyProfile?.heightCm && <button onClick={()=>setBodyOpen(true)} className="absolute right-4 top-4 z-10 rounded-full bg-[#d8ff60] px-3 py-2 text-[11px] font-bold sm:right-6 sm:top-6">Add your body type</button>}
         <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/75 to-transparent p-6 pt-32 text-white sm:p-8">
           <div className="flex items-end justify-between gap-5">
